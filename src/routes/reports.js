@@ -95,11 +95,12 @@ export default async function reportRoutes(fastify) {
       }
 
       const { rows: assignmentRows } = await pool.query(
-        `SELECT a.id, a.status, a.created_at, a.acked_at, a.resolved_at,
-                u.label AS unit_label, s.name AS dispatcher_name
+        `SELECT a.id, a.status, a.created_at, a.acked_at, a.resolved_at, a.ack_method,
+                u.label AS unit_label, s.name AS dispatcher_name, ackedBy.name AS acked_by_name
          FROM assignments a
          JOIN units u ON u.id = a.unit_id
          JOIN staff s ON s.id = a.dispatcher_id
+         LEFT JOIN staff ackedBy ON ackedBy.id = a.acked_by
          WHERE a.incident_id = $1
          ORDER BY a.created_at`,
         [incidentId]

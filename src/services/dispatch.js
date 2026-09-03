@@ -72,6 +72,10 @@ export async function createAssignment({ incidentId, unitId, dispatcherId }) {
  * Only staff crewing the assignment's unit can ack it - added while
  * building the field app, which surfaced that this wasn't enforced
  * before (any field_staff at the event could ack any unit's assignment).
+ *
+ * Accepts PENDING or UNCONFIRMED - a field device tapping Acknowledge
+ * even after the escalation ladder already flagged it UNCONFIRMED is
+ * still a real, valuable event (they were just late, not unreachable).
  */
 export async function ackAssignment({ assignmentId, staffId }) {
   const client = await pool.connect();
@@ -93,10 +97,10 @@ export async function ackAssignment({ assignmentId, staffId }) {
 
     const { rows } = await client.query(
       `UPDATE assignments
-       SET status = 'ACKED', acked_at = now()
-       WHERE id = $1 AND status IN ('PENDING','ESCALATED_SMS')
+       SET status = 'ACKED', acked_at = now(), acked_by = $2, ack_method = 'self'
+       WHERE id = $1 AND status IN ('PENDING','UNCONFIRMED')
        RETURNING id, status`,
-      [assignmentId]
+      [assignmentId, staffId]
     );
 
     if (rows.length === 0) {
@@ -106,9 +110,70 @@ export async function ackAssignment({ assignmentId, staffId }) {
       return { alreadyHandled: true, status: existing.rows[0]?.status };
     }
 
+    // Stop any not-yet-sent push for this assignment - no need to keep
+    // retrying once it's confirmed.
+    await client.query(
+      `UPDATE outbox_messages SET status = 'failed' WHERE assignment_id = $1 AND status = 'pending'`,
+      [assignmentId]
+    );
+
     await audit(client, {
       actorId: staffId,
       action: 'assignment.ack',
+      entityType: 'assignment',
+      entityId: assignmentId,
+    });
+
+    await client.query('COMMIT');
+    return { alreadyHandled: false, status: 'ACKED' };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Dispatcher acknowledges an assignment on the unit's behalf - e.g.
+ * confirmation came over the radio rather than through the app, and
+ * the dispatcher shouldn't have to wait on a busy/on-scene unit to tap
+ * their phone before progressing them through status updates. No crew
+ * check (dispatchers aren't necessarily crew on any unit), and no role
+ * restriction here since the route itself is dispatcher-gated.
+ *
+ * Recorded distinctly from a self-ack (ack_method = 'dispatcher_override')
+ * - this is the dispatcher's assertion that contact was made, not proof
+ * the field device itself received anything, and that distinction is
+ * exactly what the escalation ladder exists to track.
+ */
+export async function dispatcherAckAssignment({ assignmentId, dispatcherId }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `UPDATE assignments
+       SET status = 'ACKED', acked_at = now(), acked_by = $2, ack_method = 'dispatcher_override'
+       WHERE id = $1 AND status IN ('PENDING','UNCONFIRMED')
+       RETURNING id, status`,
+      [assignmentId, dispatcherId]
+    );
+
+    if (rows.length === 0) {
+      const existing = await client.query(`SELECT status FROM assignments WHERE id = $1`, [assignmentId]);
+      await client.query('COMMIT');
+      return { alreadyHandled: true, status: existing.rows[0]?.status };
+    }
+
+    await client.query(
+      `UPDATE outbox_messages SET status = 'failed' WHERE assignment_id = $1 AND status = 'pending'`,
+      [assignmentId]
+    );
+
+    await audit(client, {
+      actorId: dispatcherId,
+      action: 'assignment.ack.dispatcher_override',
       entityType: 'assignment',
       entityId: assignmentId,
     });
