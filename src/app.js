@@ -12,6 +12,7 @@ import adminRoutes from './routes/admin.js';
 import meRoutes from './routes/me.js';
 import liveRoutes from './routes/live.js';
 import reportRoutes from './routes/reports.js';
+import eventRoutes from './routes/events.js';
 
 export function buildApp() {
   const app = Fastify({
@@ -51,6 +52,7 @@ export function buildApp() {
   app.register(incidentRoutes);
   app.register(liveRoutes);
   app.register(reportRoutes);
+  app.register(eventRoutes);
 
   return app;
 }

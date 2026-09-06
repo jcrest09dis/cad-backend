@@ -524,6 +524,20 @@ the field app later.
   historical-display caveat as the wholesale replace route above
   applies here too, at a smaller scale.
 
+## Closing an event from the dispatch board, not just admin tools
+
+`POST /events/:eventId/close` (`src/routes/events.js`) — a dispatcher
+can now close their own event directly from the live board, restricted
+to `requireRole('dispatcher')` rather than admin. Closing an event after
+it's wrapped up is routine dispatcher work, not something that should
+require finding an admin. Does the exact same real cleanup as the
+admin-only route (cancel active assignments, clear crew, return units
+to the pool, check out staff) — the two routes now share one
+implementation (`services/eventLifecycle.js`'s `closeEvent`) rather than
+maintaining duplicate logic that could drift apart over time.
+**Reopening stays admin-only** — undoing a close is more of a
+correction than routine work.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own
