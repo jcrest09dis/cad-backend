@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { audit } from '../lib/audit.js';
+import { encryptNote } from '../lib/crypto.js';
 
 /**
  * Creates an Assignment linking a Unit to an Incident, and atomically
@@ -230,6 +231,34 @@ export async function selfDispatchAssignment({ incidentId, unitId, staffId }) {
       `UPDATE incidents SET status = 'DISPATCHED' WHERE id = $1 AND status = 'OPEN'`,
       [incidentId]
     );
+
+    // Automatically log the self-dispatch as a real note, not just an
+    // assignment record - shows up in the same note history everyone
+    // already reads (live view, console, Reports), with author name and
+    // timestamp handled for free by the existing note-revision display
+    // (every revision already renders "authorName, timestamp" above its
+    // content) - the note text itself only needs to say what happened,
+    // not restate who/when.
+    const { rows: unitRows } = await client.query(`SELECT label FROM units WHERE id = $1`, [unitId]);
+    const unitLabel = unitRows[0]?.label ?? 'Unit';
+    const noteContent = `Self-dispatched ${unitLabel} to this incident.`;
+    const { ciphertext, keyId, dataKeyCiphertext } = await encryptNote(noteContent);
+
+    await client.query(
+      `UPDATE incidents SET notes_ciphertext = $1, notes_key_id = $2, notes_data_key_ciphertext = $3 WHERE id = $4`,
+      [ciphertext, keyId, dataKeyCiphertext, incidentId]
+    );
+    await client.query(
+      `INSERT INTO incident_note_revisions (incident_id, author_id, content_ciphertext, notes_key_id, data_key_ciphertext)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [incidentId, staffId, ciphertext, keyId, dataKeyCiphertext]
+    );
+    await audit(client, {
+      actorId: staffId,
+      action: 'incident.notes.write',
+      entityType: 'incident',
+      entityId: incidentId,
+    });
 
     await audit(client, {
       actorId: staffId,

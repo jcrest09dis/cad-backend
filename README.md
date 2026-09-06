@@ -442,6 +442,14 @@ dispatch apply here unchanged — a unit or incident that already has a
 live assignment cleanly rejects a self-dispatch attempt with a 409,
 same as it would a dispatcher-created one.
 
+A self-dispatch also automatically creates a real note on the incident
+("Self-dispatched Medic 1 to this incident.") rather than leaving the
+event visible only as an assignment record. This reuses the existing
+note-revision system entirely — author name and timestamp are handled
+for free by the note display every screen already has (every revision
+renders "authorName, timestamp" above its content), so the generated
+note text only needs to say what happened, not restate who/when.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own
