@@ -180,6 +180,38 @@ export default async function adminRoutes(fastify) {
     reply.code(201).send({ zoneId: rows[0].id });
   });
 
+  // Bulk import - built for populating a venue with an entire stadium's
+  // worth of sections/suites/named areas at once (dozens to hundreds of
+  // entries) rather than one at a time through the single-zone form
+  // above. No duplicate detection (same as the single-add route above -
+  // matching existing behavior rather than introducing new rules only
+  // for this path).
+  fastify.post('/admin/venues/:venueId/zones/batch', async (request, reply) => {
+    const { labels } = request.body;
+    if (!Array.isArray(labels) || labels.length === 0) {
+      reply.code(400).send({ error: 'labels must be a non-empty array' });
+      return;
+    }
+    const cleanLabels = labels.map((l) => String(l).trim()).filter(Boolean);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const label of cleanLabels) {
+        await client.query(`INSERT INTO venue_zones (venue_id, label) VALUES ($1, $2)`, [
+          request.params.venueId,
+          label,
+        ]);
+      }
+      await client.query('COMMIT');
+      reply.code(201).send({ created: cleanLabels.length });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      reply.code(500).send({ error: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
   fastify.get('/admin/venues/:venueId/zones', async (request, reply) => {
     const { rows } = await pool.query(
       `SELECT id, label FROM venue_zones WHERE venue_id = $1 ORDER BY label`,

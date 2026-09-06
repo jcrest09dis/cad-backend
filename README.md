@@ -484,6 +484,12 @@ Known gap, not addressed here: nothing stops an admin from assigning a
 unit to an already-`closed` event via the Units tab's dropdown. Worth
 adding a guard if this turns out to matter in practice.
 
+- `POST /admin/venues/:venueId/zones` — add one zone.
+- `POST /admin/venues/:venueId/zones/batch` — add many at once (body:
+  `{labels: [...]}`) — built for populating a venue with an entire
+  stadium's worth of sections/suites/named areas in one go, rather than
+  one at a time. No duplicate detection, matching the single-add route.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own
