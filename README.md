@@ -450,6 +450,28 @@ for free by the note display every screen already has (every revision
 renders "authorName, timestamp" above its content), so the generated
 note text only needs to say what happened, not restate who/when.
 
+## Real event close/reopen
+
+`POST /admin/events/:eventId/close` used to just flip a status field.
+Now it does real cleanup, in one transaction: any unit still belonging
+to the event returns to the pool (`event_id = NULL`, matching the
+pooled-unit model — same as manually setting "Unassigned" in the admin
+Units tab), reset to `AVAILABLE` with `current_assignment_id` cleared.
+Any assignment still active at close time (`PENDING`/`ACKED`/
+`UNCONFIRMED`) is cancelled first — otherwise it would be left
+referencing a unit that just got pulled out of the event, and a status
+that no longer means anything once the event is over.
+
+`POST /admin/events/:eventId/reopen` sets the event back to `active`.
+Deliberately does **not** restore any units automatically — they were
+intentionally returned to the pool on close, and reassigning them (via
+the Units tab's existing dropdown) is a fresh, explicit admin decision,
+not something to silently redo.
+
+Known gap, not addressed here: nothing stops an admin from assigning a
+unit to an already-`closed` event via the Units tab's dropdown. Worth
+adding a guard if this turns out to matter in practice.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own

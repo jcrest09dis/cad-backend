@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { requireAuth, requireGlobalAdmin } from '../middleware/auth.js';
+import { broadcastEventUpdate } from '../services/liveUpdates.js';
 
 /**
  * Org-level admin endpoints: the records that have to exist before any
@@ -206,9 +207,62 @@ export default async function adminRoutes(fastify) {
     reply.send(rows);
   });
 
+  // Closing an event does real cleanup, not just a status flip: any
+  // unit still belonging to this event returns to the pool
+  // (event_id = NULL, matching the pooled-unit model), reset to
+  // AVAILABLE, with its current_assignment_id cleared. Any assignment
+  // still active at close time (PENDING/ACKED/UNCONFIRMED) is cancelled
+  // first, in the same transaction - otherwise it would be left
+  // dangling, referencing a unit that just got yanked out of the event
+  // and a status that no longer means anything once the event is over.
   fastify.post('/admin/events/:eventId/close', async (request, reply) => {
-    await pool.query(`UPDATE events SET status = 'closed' WHERE id = $1`, [request.params.eventId]);
-    reply.send({ closed: true });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await client.query(`UPDATE events SET status = 'closed' WHERE id = $1`, [request.params.eventId]);
+
+      const { rows: unitRows } = await client.query(`SELECT id FROM units WHERE event_id = $1`, [
+        request.params.eventId,
+      ]);
+
+      for (const unit of unitRows) {
+        await client.query(
+          `UPDATE assignments SET status = 'CANCELLED'
+           WHERE unit_id = $1 AND status IN ('PENDING','ACKED','UNCONFIRMED')`,
+          [unit.id]
+        );
+        await client.query(
+          `UPDATE units SET event_id = NULL, current_assignment_id = NULL, status = 'AVAILABLE' WHERE id = $1`,
+          [unit.id]
+        );
+      }
+
+      await client.query('COMMIT');
+      broadcastEventUpdate(request.params.eventId, { type: 'refresh', reason: 'event.closed' });
+      reply.send({ closed: true, unitsUnassigned: unitRows.length });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      reply.code(500).send({ error: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Reopening does NOT restore any units automatically - they were
+  // deliberately returned to the pool on close, and re-assigning them
+  // (via the Units tab's existing assign-to-event dropdown) is a fresh,
+  // explicit admin decision, not something to silently redo.
+  fastify.post('/admin/events/:eventId/reopen', async (request, reply) => {
+    const { rows } = await pool.query(
+      `UPDATE events SET status = 'active' WHERE id = $1 RETURNING id`,
+      [request.params.eventId]
+    );
+    if (rows.length === 0) {
+      reply.code(404).send({ error: 'event not found' });
+      return;
+    }
+    reply.send({ reopened: true });
   });
 
   // ---- Units (pooled - can exist without an event, same idea as
