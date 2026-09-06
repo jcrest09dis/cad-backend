@@ -226,6 +226,90 @@ export default async function incidentRoutes(fastify) {
     }
   );
 
+  // Update an incident's location after creation - same access model as
+  // notes (mirrors the exact same edit-window and assignment checks):
+  // dispatchers can always edit while the incident isn't terminal;
+  // field staff can only edit while it's OPEN/DISPATCHED AND they're
+  // currently assigned to it (not just anyone who happens to be at the
+  // event). A typo or an updated report ("actually it's Section 115,
+  // not 114") is common enough that this needed a real path, not just
+  // creating a new incident to fix it.
+  fastify.post(
+    '/events/:eventId/incidents/:id/location',
+    { preHandler: [requireAuth, requireEventMembership] },
+    async (request, reply) => {
+      const { locationText } = request.body;
+      const incidentId = request.params.id;
+      const staffId = request.user.staffId;
+
+      if (!locationText || !locationText.trim()) {
+        reply.code(400).send({ error: 'locationText is required' });
+        return;
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const { rows } = await client.query(
+          `SELECT status FROM incidents WHERE id = $1 AND event_id = $2 FOR UPDATE`,
+          [incidentId, request.params.eventId]
+        );
+        if (rows.length === 0) {
+          await client.query('ROLLBACK');
+          reply.code(404).send({ error: 'incident not found' });
+          return;
+        }
+        const { status } = rows[0];
+
+        if (request.eventRole === 'field_staff') {
+          if (!FIELD_STAFF_EDITABLE_STATUSES.includes(status)) {
+            await client.query('ROLLBACK');
+            reply.code(403).send({ error: 'incident is closed; location is locked for field staff' });
+            return;
+          }
+          const { rows: ownAssignment } = await client.query(
+            `SELECT a.id FROM assignments a
+             JOIN unit_staff us ON us.unit_id = a.unit_id
+             WHERE a.incident_id = $1 AND us.staff_id = $2
+               AND a.status IN ('PENDING','ACKED','UNCONFIRMED')`,
+            [incidentId, staffId]
+          );
+          if (ownAssignment.length === 0) {
+            await client.query('ROLLBACK');
+            reply.code(403).send({ error: 'not assigned to this incident' });
+            return;
+          }
+        } else if (request.eventRole !== 'dispatcher') {
+          await client.query('ROLLBACK');
+          reply.code(403).send({ error: 'not permitted to update location' });
+          return;
+        }
+
+        await client.query(
+          `UPDATE incidents SET location_text = $1, location_zone_id = NULL WHERE id = $2`,
+          [locationText.trim(), incidentId]
+        );
+
+        await audit(client, {
+          actorId: staffId,
+          action: 'incident.location.update',
+          entityType: 'incident',
+          entityId: incidentId,
+        });
+
+        await client.query('COMMIT');
+        broadcastEventUpdate(request.params.eventId, { type: 'refresh', reason: 'incident.location_updated' });
+        reply.send({ updated: true });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        reply.code(500).send({ error: err.message });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
   // Add/edit notes. Field staff: only on their own current assignment's
   // incident, and only while status is OPEN/DISPATCHED. Dispatcher:
   // any incident on the event, any status.

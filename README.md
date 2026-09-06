@@ -490,6 +490,24 @@ adding a guard if this turns out to matter in practice.
   stadium's worth of sections/suites/named areas in one go, rather than
   one at a time. No duplicate detection, matching the single-add route.
 
+## Editing an incident's location after creation
+
+`POST /events/:eventId/incidents/:id/location` — mirrors the exact same
+access model as notes (`ackAssignment`'s sibling: dispatchers can always
+edit while the incident isn't terminal; field staff can only edit while
+it's `OPEN`/`DISPATCHED` **and** they're currently assigned to it, not
+just anyone at the event). A typo or an updated report ("actually it's
+Section 115, not 114") is common enough that this needed a real path
+rather than creating a new incident to fix it. Clears
+`location_zone_id` on update, same as creation — an edited location is
+always free text going forward, even if the incident originally came in
+tied to a predefined zone.
+
+Only wired into the console so far (`IncidentDetailPanel.jsx`'s "Edit"
+link next to the location) — the backend already supports field staff
+editing their own assigned incident's location too, if that's wanted in
+the field app later.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own
