@@ -189,6 +189,73 @@ export async function dispatcherAckAssignment({ assignmentId, dispatcherId }) {
 }
 
 /**
+ * A field unit dispatches themselves to an incident - no dispatcher
+ * involved at all. Skips the whole push/ack handshake entirely (no
+ * outbox row, no PENDING state) since a unit obviously doesn't need to
+ * be notified of, or asked to acknowledge, their own action - it's
+ * created directly as ACKED. dispatcher_id is set to the same staffId
+ * as acked_by, since there genuinely isn't a separate dispatcher for
+ * this assignment and the column is NOT NULL.
+ *
+ * Recorded with ack_method = 'self_initiated' - distinct from a normal
+ * self-ack or a dispatcher's radio override, since this assignment was
+ * never dispatched by anyone else in the first place.
+ */
+export async function selfDispatchAssignment({ incidentId, unitId, staffId }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: crewCheck } = await client.query(
+      `SELECT 1 FROM unit_staff WHERE unit_id = $1 AND staff_id = $2`,
+      [unitId, staffId]
+    );
+    if (crewCheck.length === 0) {
+      await client.query('ROLLBACK');
+      const err = new Error('not crewing this unit');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const assignmentResult = await client.query(
+      `INSERT INTO assignments (incident_id, unit_id, dispatcher_id, status, acked_at, acked_by, ack_method)
+       VALUES ($1, $2, $3, 'ACKED', now(), $3, 'self_initiated')
+       RETURNING id`,
+      [incidentId, unitId, staffId]
+    );
+    const assignmentId = assignmentResult.rows[0].id;
+
+    await client.query(`UPDATE units SET current_assignment_id = $1 WHERE id = $2`, [assignmentId, unitId]);
+    await client.query(
+      `UPDATE incidents SET status = 'DISPATCHED' WHERE id = $1 AND status = 'OPEN'`,
+      [incidentId]
+    );
+
+    await audit(client, {
+      actorId: staffId,
+      action: 'assignment.self_dispatch',
+      entityType: 'assignment',
+      entityId: assignmentId,
+    });
+
+    await client.query('COMMIT');
+    return { assignmentId };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      // Same partial unique indexes that protect dispatcher-created
+      // assignments - this unit or incident already has a live one.
+      const err2 = new Error('this unit or incident already has an active assignment');
+      err2.statusCode = 409;
+      throw err2;
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Dispatcher cancels an in-flight assignment. Must also stop any
  * pending outbox sends (SMS escalation) so a unit doesn't get an SMS
  * for an assignment that's already been reassigned.

@@ -388,6 +388,60 @@ untouched — no longer required for incident creation, but still used to
 populate a suggestions `<datalist>` on the free-text field, and remain
 available for whatever future purpose.
 
+## Dispatcher-acknowledged assignments (confirmation by radio)
+
+`POST /events/:eventId/assignments/:id/dispatcher-ack` — a dispatcher
+can now acknowledge an assignment on the unit's behalf (e.g. confirmed
+over the radio), so a busy/on-scene unit doesn't block status
+progression just because they haven't tapped their phone yet. Migration
+`007_assignment_ack_tracking.sql` adds `assignments.acked_by` and
+`ack_method` (`'self' | 'dispatcher_override'`) — a dispatcher's radio
+confirmation is recorded as a genuinely different kind of event from the
+field device confirming receipt itself, which matters given the whole
+point of the escalation ladder is knowing whether a message actually
+reached someone. Both the live assignments list and the Reports/history
+view surface who acked an assignment and by which method.
+
+While making this change, also fixed a stale reference: `ackAssignment`
+still checked for the removed `ESCALATED_SMS` status instead of
+`UNCONFIRMED`, and now also accepts a self-ack *after* escalation to
+`UNCONFIRMED` — a field device tapping Acknowledge late (they were just
+busy, not unreachable) is still a real, valuable event, not something
+that should be rejected once escalation has already fired.
+
+## Self-initiate and self-dispatch
+
+Two related but distinct capabilities, both driven by real usage
+feedback:
+
+- **Self-initiate** (report an incident yourself) — turns out this
+  already worked at the backend level the whole time:
+  `POST /events/:eventId/incidents` was never role-restricted, only
+  `requireEventMembership`. What was actually missing was a field-app
+  UI for it, which never existed.
+- **Self-dispatch** (assign your own unit without a dispatcher) is
+  genuinely new. `POST /events/:eventId/incidents/:id/self-dispatch`
+  (`services/dispatch.js`'s `selfDispatchAssignment`), restricted to
+  `field_staff`. Skips the push/ack handshake entirely — no outbox row,
+  no `PENDING` state — since a unit obviously doesn't need to be
+  notified of, or asked to acknowledge, their own action. Created
+  directly as `ACKED`. `dispatcher_id` is set to the same staffId as
+  `acked_by`, since there genuinely isn't a separate dispatcher for this
+  assignment and that column is `NOT NULL`.
+
+Migration `008_self_dispatch.sql` extends `ack_method`'s CHECK
+constraint to a third value, `'self_initiated'` — distinct from both
+`'self'` (field device confirmed a dispatcher's assignment) and
+`'dispatcher_override'` (dispatcher confirmed by radio), since this
+assignment was never dispatched by anyone else in the first place. Same
+accountability principle as the dispatcher-ack feature: every assignment
+should honestly reflect who actually initiated it and how.
+
+The same partial unique indexes that prevent double-booking on a normal
+dispatch apply here unchanged — a unit or incident that already has a
+live assignment cleanly rejects a self-dispatch attempt with a 409,
+same as it would a dispatcher-created one.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own

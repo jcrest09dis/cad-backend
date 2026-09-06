@@ -4,6 +4,7 @@ import {
   createAssignment,
   ackAssignment,
   dispatcherAckAssignment,
+  selfDispatchAssignment,
   cancelAssignment,
   completeAssignment,
 } from '../services/dispatch.js';
@@ -87,6 +88,30 @@ export default async function assignmentRoutes(fastify) {
         });
         broadcastEventUpdate(request.params.eventId, { type: 'refresh', reason: 'assignment.acked' });
         reply.send(result);
+      } catch (err) {
+        reply.code(err.statusCode ?? 500).send({ error: err.message });
+      }
+    }
+  );
+
+  // Field staff dispatches their own unit to an incident, no dispatcher
+  // involved - e.g. a unit spots something themselves, or sees an open
+  // incident in situational awareness and takes it without waiting to
+  // be assigned. Restricted to field_staff (dispatchers already have
+  // the normal create-assignment route above for this).
+  fastify.post(
+    '/events/:eventId/incidents/:id/self-dispatch',
+    { preHandler: [requireAuth, requireEventMembership, requireRole('field_staff')] },
+    async (request, reply) => {
+      const { unitId } = request.body;
+      try {
+        const result = await selfDispatchAssignment({
+          incidentId: request.params.id,
+          unitId,
+          staffId: request.user.staffId,
+        });
+        broadcastEventUpdate(request.params.eventId, { type: 'refresh', reason: 'assignment.self_dispatch' });
+        reply.code(201).send(result);
       } catch (err) {
         reply.code(err.statusCode ?? 500).send({ error: err.message });
       }
