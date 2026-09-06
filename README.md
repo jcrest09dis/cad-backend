@@ -489,6 +489,16 @@ adding a guard if this turns out to matter in practice.
   `{labels: [...]}`) — built for populating a venue with an entire
   stadium's worth of sections/suites/named areas in one go, rather than
   one at a time. No duplicate detection, matching the single-add route.
+- `POST /admin/venues/:venueId/zones/replace` — deletes every existing
+  zone for the venue and inserts a new list. Built for re-importing a
+  corrected/updated list (e.g. adding row ranges to labels that already
+  existed) without ending up with both old and new versions coexisting
+  as duplicate suggestions. Worth knowing: any historical incident whose
+  `location_zone_id` still points at a deleted row (only possible for
+  incidents created before locations became free text) loses its
+  `zone_label` display, since that's computed via
+  `COALESCE(location_text, <joined venue_zones label>)` and the join
+  finds nothing once the row is gone.
 
 ## Editing an incident's location after creation
 

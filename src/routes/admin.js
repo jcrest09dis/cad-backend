@@ -220,6 +220,44 @@ export default async function adminRoutes(fastify) {
     reply.send(rows);
   });
 
+  // Wholesale replace - deletes every existing zone for the venue and
+  // inserts the new list. Built for re-importing a corrected/updated
+  // zone list (e.g. adding row ranges to labels that already existed)
+  // without ending up with both the old and new versions coexisting as
+  // duplicate suggestions. Worth knowing: any historical incident whose
+  // location_zone_id still points at a deleted row (only possible for
+  // incidents created before locations became free text - see
+  // 005_incident_free_text_location.sql) would lose its zone_label
+  // display, since that display is computed via
+  // COALESCE(location_text, <joined venue_zones label>) and the join
+  // would now find nothing.
+  fastify.post('/admin/venues/:venueId/zones/replace', async (request, reply) => {
+    const { labels } = request.body;
+    if (!Array.isArray(labels) || labels.length === 0) {
+      reply.code(400).send({ error: 'labels must be a non-empty array' });
+      return;
+    }
+    const cleanLabels = labels.map((l) => String(l).trim()).filter(Boolean);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`DELETE FROM venue_zones WHERE venue_id = $1`, [request.params.venueId]);
+      for (const label of cleanLabels) {
+        await client.query(`INSERT INTO venue_zones (venue_id, label) VALUES ($1, $2)`, [
+          request.params.venueId,
+          label,
+        ]);
+      }
+      await client.query('COMMIT');
+      reply.send({ replaced: cleanLabels.length });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      reply.code(500).send({ error: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
   // ---- Events ----
   fastify.post('/admin/events', async (request, reply) => {
     const { name, venueId, startTime, endTime } = request.body;
