@@ -518,6 +518,12 @@ link next to the location) — the backend already supports field staff
 editing their own assigned incident's location too, if that's wanted in
 the field app later.
 
+- `POST /admin/zones/:zoneId` — edit a single zone's label (fixing a
+  typo, updating a row range, without touching every other zone).
+- `POST /admin/zones/:zoneId/delete` — delete a single zone. Same
+  historical-display caveat as the wholesale replace route above
+  applies here too, at a smaller scale.
+
 ## Self-service (`/me/*`)
 
 `src/routes/me.js`. For a logged-in staff member acting on their own

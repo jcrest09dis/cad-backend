@@ -220,6 +220,41 @@ export default async function adminRoutes(fastify) {
     reply.send(rows);
   });
 
+  // Edit a single zone's label (e.g. fixing a typo or updating a row
+  // range without touching every other zone).
+  fastify.post('/admin/zones/:zoneId', async (request, reply) => {
+    const { label } = request.body;
+    if (!label || !label.trim()) {
+      reply.code(400).send({ error: 'label is required' });
+      return;
+    }
+    const { rows } = await pool.query(
+      `UPDATE venue_zones SET label = $1 WHERE id = $2 RETURNING id`,
+      [label.trim(), request.params.zoneId]
+    );
+    if (rows.length === 0) {
+      reply.code(404).send({ error: 'zone not found' });
+      return;
+    }
+    reply.send({ updated: true });
+  });
+
+  // Delete a single zone. Same historical-display caveat as the
+  // wholesale replace route above applies here too, at a smaller scale -
+  // any incident whose location_zone_id points at this row (only
+  // possible pre-free-text-location) loses its zone_label display.
+  fastify.post('/admin/zones/:zoneId/delete', async (request, reply) => {
+    const { rows } = await pool.query(
+      `DELETE FROM venue_zones WHERE id = $1 RETURNING id`,
+      [request.params.zoneId]
+    );
+    if (rows.length === 0) {
+      reply.code(404).send({ error: 'zone not found' });
+      return;
+    }
+    reply.send({ deleted: true });
+  });
+
   // Wholesale replace - deletes every existing zone for the venue and
   // inserts the new list. Built for re-importing a corrected/updated
   // zone list (e.g. adding row ranges to labels that already existed)
