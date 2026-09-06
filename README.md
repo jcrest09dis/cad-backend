@@ -453,14 +453,26 @@ note text only needs to say what happened, not restate who/when.
 ## Real event close/reopen
 
 `POST /admin/events/:eventId/close` used to just flip a status field.
-Now it does real cleanup, in one transaction: any unit still belonging
-to the event returns to the pool (`event_id = NULL`, matching the
-pooled-unit model — same as manually setting "Unassigned" in the admin
-Units tab), reset to `AVAILABLE` with `current_assignment_id` cleared.
-Any assignment still active at close time (`PENDING`/`ACKED`/
-`UNCONFIRMED`) is cancelled first — otherwise it would be left
-referencing a unit that just got pulled out of the event, and a status
-that no longer means anything once the event is over.
+Now it does real cleanup, in one transaction:
+- any unit still belonging to the event returns to the pool
+  (`event_id = NULL`, matching the pooled-unit model — same as manually
+  setting "Unassigned" in the admin Units tab), reset to `AVAILABLE`
+  with `current_assignment_id` cleared
+- any assignment still active at close time (`PENDING`/`ACKED`/
+  `UNCONFIRMED`) is cancelled first — otherwise it would be left
+  referencing a unit that just got pulled out of the event, and a
+  status that no longer means anything once the event is over
+- crew (`unit_staff`) is cleared for those units — crewing was
+  contextual to this event, and since the unit is returning to the pool
+  for reuse elsewhere, carrying the old crew forward wouldn't make
+  sense. This isn't a historical record the way `EventStaffing` is, so
+  clearing it loses nothing worth keeping
+- every staff member still checked in is **checked out**
+  (`checked_out_at = now()`), not deleted — `EventStaffing` is the
+  actual historical "who worked this event" record, and this project
+  has consistently preferred checking out over deleting for exactly
+  that reason (see staff deactivation vs. hard delete in the Staff
+  section above)
 
 `POST /admin/events/:eventId/reopen` sets the event back to `active`.
 Deliberately does **not** restore any units automatically — they were
