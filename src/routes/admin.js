@@ -166,12 +166,79 @@ export default async function adminRoutes(fastify) {
     reply.code(201).send({ venueId: rows[0].id });
   });
 
+  // has_map lets the console's admin Venues tab decide whether to show
+  // "Upload map" or "Replace map" / offer the click-to-place tool.
   fastify.get('/admin/venues', async (request, reply) => {
-    const { rows } = await pool.query(`SELECT id, name FROM venues ORDER BY name`);
+    const { rows } = await pool.query(
+      `SELECT id, name, (map_image IS NOT NULL) AS has_map FROM venues ORDER BY name`
+    );
     reply.send(rows);
   });
 
-  // ---- Venue zones (the location dropdown for a given venue) ----
+  // ---- Venue map image ----
+  // Image stored as bytes directly in Postgres (BYTEA) rather than a
+  // separate object-storage service - simplest option given the low
+  // volume (a handful of venues, uploaded rarely) and avoids adding a
+  // new infrastructure dependency for this feature. Sent as base64 JSON
+  // rather than multipart, since @fastify/multipart isn't already a
+  // dependency here - app.js raises the body size limit to accommodate
+  // the ~33% base64 overhead.
+  fastify.post('/admin/venues/:venueId/map', async (request, reply) => {
+    const { imageBase64, contentType } = request.body;
+    if (!imageBase64 || !contentType) {
+      reply.code(400).send({ error: 'imageBase64 and contentType are required' });
+      return;
+    }
+    let buffer;
+    try {
+      buffer = Buffer.from(imageBase64, 'base64');
+    } catch {
+      reply.code(400).send({ error: 'imageBase64 is not valid base64' });
+      return;
+    }
+    if (buffer.length === 0) {
+      reply.code(400).send({ error: 'decoded image is empty' });
+      return;
+    }
+    const { rows } = await pool.query(
+      `UPDATE venues SET map_image = $1, map_image_content_type = $2 WHERE id = $3 RETURNING id`,
+      [buffer, contentType, request.params.venueId]
+    );
+    if (rows.length === 0) {
+      reply.code(404).send({ error: 'venue not found' });
+      return;
+    }
+    reply.send({ updated: true });
+  });
+
+  // Remove a venue's map image (e.g. replacing it with a corrected
+  // scan) - also clears every zone's placed coordinates for this venue,
+  // since a coordinate only means something relative to the specific
+  // image it was clicked on.
+  fastify.post('/admin/venues/:venueId/map/delete', async (request, reply) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE venues SET map_image = NULL, map_image_content_type = NULL WHERE id = $1`,
+        [request.params.venueId]
+      );
+      await client.query(
+        `UPDATE venue_zones SET map_x = NULL, map_y = NULL WHERE venue_id = $1`,
+        [request.params.venueId]
+      );
+      await client.query('COMMIT');
+      reply.send({ deleted: true });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      reply.code(500).send({ error: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // ---- Venue zones (the location dropdown per venue, and now also the
+  // click-to-place map positions) ----
   fastify.post('/admin/venues/:venueId/zones', async (request, reply) => {
     const { label } = request.body;
     const { rows } = await pool.query(
@@ -213,9 +280,11 @@ export default async function adminRoutes(fastify) {
     }
   });
 
+  // Now also returns map_x/map_y so the console's click-to-place tool
+  // can show which zones are already placed on the venue's map image.
   fastify.get('/admin/venues/:venueId/zones', async (request, reply) => {
     const { rows } = await pool.query(
-      `SELECT id, label FROM venue_zones WHERE venue_id = $1 ORDER BY label`,
+      `SELECT id, label, map_x, map_y FROM venue_zones WHERE venue_id = $1 ORDER BY label`,
       [request.params.venueId]
     );
     reply.send(rows);
@@ -232,6 +301,28 @@ export default async function adminRoutes(fastify) {
     const { rows } = await pool.query(
       `UPDATE venue_zones SET label = $1 WHERE id = $2 RETURNING id`,
       [label.trim(), request.params.zoneId]
+    );
+    if (rows.length === 0) {
+      reply.code(404).send({ error: 'zone not found' });
+      return;
+    }
+    reply.send({ updated: true });
+  });
+
+  // Save (or clear, by passing mapX: null, mapY: null) a single zone's
+  // click-to-place position on its venue's map image. Fractional 0-1
+  // coordinates - see migration 009 for why.
+  fastify.post('/admin/zones/:zoneId/map-position', async (request, reply) => {
+    const { mapX, mapY } = request.body;
+    const hasPosition = typeof mapX === 'number' && typeof mapY === 'number';
+    const isExplicitClear = mapX === null && mapY === null;
+    if (!hasPosition && !isExplicitClear) {
+      reply.code(400).send({ error: 'mapX and mapY must both be numbers, or both null to clear' });
+      return;
+    }
+    const { rows } = await pool.query(
+      `UPDATE venue_zones SET map_x = $1, map_y = $2 WHERE id = $3 RETURNING id`,
+      [hasPosition ? mapX : null, hasPosition ? mapY : null, request.params.zoneId]
     );
     if (rows.length === 0) {
       reply.code(404).send({ error: 'zone not found' });
@@ -266,7 +357,9 @@ export default async function adminRoutes(fastify) {
   // 005_incident_free_text_location.sql) would lose its zone_label
   // display, since that display is computed via
   // COALESCE(location_text, <joined venue_zones label>) and the join
-  // would now find nothing.
+  // would now find nothing. Replacing zones this way also discards any
+  // map_x/map_y placements on the replaced rows, since new rows get
+  // fresh ids - re-place them on the map afterward if needed.
   fastify.post('/admin/venues/:venueId/zones/replace', async (request, reply) => {
     const { labels } = request.body;
     if (!Array.isArray(labels) || labels.length === 0) {

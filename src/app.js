@@ -13,10 +13,15 @@ import meRoutes from './routes/me.js';
 import liveRoutes from './routes/live.js';
 import reportRoutes from './routes/reports.js';
 import eventRoutes from './routes/events.js';
+import venueMapRoutes from './routes/venueMaps.js';
 
 export function buildApp() {
   const app = Fastify({
     logger: { transport: { target: 'pino-pretty' } },
+    // Default (1MB) is too small for a base64-encoded venue map image
+    // upload (admin.js's POST /admin/venues/:venueId/map) - base64 adds
+    // ~33% overhead on top of the image's own size.
+    bodyLimit: 10 * 1024 * 1024,
   });
 
   app.register(fastifyJwt, { secret: process.env.JWT_SECRET });
@@ -53,6 +58,7 @@ export function buildApp() {
   app.register(liveRoutes);
   app.register(reportRoutes);
   app.register(eventRoutes);
+  app.register(venueMapRoutes);
 
   return app;
 }
