@@ -434,6 +434,89 @@ export default async function adminRoutes(fastify) {
     reply.send({ reopened: true });
   });
 
+    // Hard delete an event and everything tied to it - deliberately
+  // unconditional (unlike the venue/staff deletes above, which block
+  // when real history exists). Incidents, their assignments/note
+  // revisions/outbox messages, and this event's staffing records are
+  // all removed. Units are NOT deleted - they're pooled resources, so
+  // they're returned to the pool (same cleanup as closeEvent) rather
+  // than destroyed.
+  fastify.post('/admin/events/:eventId/delete', async (request, reply) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: eventRows } = await client.query(`SELECT id FROM events WHERE id = $1 FOR UPDATE`, [
+        request.params.eventId,
+      ]);
+      if (eventRows.length === 0) {
+        await client.query('ROLLBACK');
+        reply.code(404).send({ error: 'event not found' });
+        return;
+      }
+
+      const { rows: incidentRows } = await client.query(`SELECT id FROM incidents WHERE event_id = $1`, [
+        request.params.eventId,
+      ]);
+      const incidentIds = incidentRows.map((r) => r.id);
+
+      const { rows: assignmentRows } = await client.query(
+        `SELECT id FROM assignments WHERE incident_id = ANY($1::uuid[])`,
+        [incidentIds]
+      );
+      const assignmentIds = assignmentRows.map((r) => r.id);
+
+      // Tidy audit_log rows pointing at data that's about to be gone -
+      // entity_id has no real FK, so this isn't required for the deletes
+      // below to succeed, just keeps the audit trail from having dangling
+      // references to nothing.
+      await client.query(
+        `DELETE FROM audit_log WHERE entity_type = 'incident' AND entity_id = ANY($1::uuid[])`,
+        [incidentIds]
+      );
+      await client.query(
+        `DELETE FROM audit_log WHERE entity_type = 'assignment' AND entity_id = ANY($1::uuid[])`,
+        [assignmentIds]
+      );
+
+      await client.query(
+        `UPDATE units SET current_assignment_id = NULL WHERE current_assignment_id = ANY($1::uuid[])`,
+        [assignmentIds]
+      );
+      await client.query(`DELETE FROM outbox_messages WHERE assignment_id = ANY($1::uuid[])`, [assignmentIds]);
+      await client.query(`DELETE FROM assignments WHERE id = ANY($1::uuid[])`, [assignmentIds]);
+      await client.query(`DELETE FROM incident_note_revisions WHERE incident_id = ANY($1::uuid[])`, [incidentIds]);
+      await client.query(`DELETE FROM incidents WHERE id = ANY($1::uuid[])`, [incidentIds]);
+
+      // Units aren't destroyed - return them to the pool, same cleanup
+      // closeEvent already does for a normal close.
+      const { rows: unitRows } = await client.query(`SELECT id FROM units WHERE event_id = $1`, [
+        request.params.eventId,
+      ]);
+      const unitIds = unitRows.map((r) => r.id);
+      await client.query(`DELETE FROM unit_staff WHERE unit_id = ANY($1::uuid[])`, [unitIds]);
+      await client.query(
+        `UPDATE units SET event_id = NULL, current_assignment_id = NULL, status = 'AVAILABLE' WHERE id = ANY($1::uuid[])`,
+        [unitIds]
+      );
+
+      await client.query(`DELETE FROM event_staffing WHERE event_id = $1`, [request.params.eventId]);
+      await client.query(`DELETE FROM events WHERE id = $1`, [request.params.eventId]);
+
+      await client.query('COMMIT');
+      reply.send({
+        deleted: true,
+        incidentsDeleted: incidentIds.length,
+        unitsReturnedToPool: unitIds.length,
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      reply.code(500).send({ error: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
   // ---- Units (pooled - can exist without an event, same idea as
   // staff being pooled and checked into events rather than recreated
   // per event) ----
