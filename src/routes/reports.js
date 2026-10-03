@@ -245,12 +245,12 @@ export default async function reportRoutes(fastify) {
         incidents.push({ ...incident, assignments: assignmentRows, noteRevisions });
       }
 
-      const pdfDoc = buildEventReportPdf({ event, incidents });
+      const pdfBuffer = await buildEventReportPdf({ event, incidents });
       const safeName = event.name.replace(/[^a-z0-9]+/gi, '-');
 
       reply.header('Content-Type', 'application/pdf');
       reply.header('Content-Disposition', `attachment; filename="incident-report-${safeName}.pdf"`);
-      reply.send(pdfDoc);
+      reply.send(pdfBuffer);
     }
   );
 }
