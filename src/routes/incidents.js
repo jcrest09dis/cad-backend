@@ -1,5 +1,5 @@
 ﻿import { pool } from '../db/pool.js';
-import { requireAuth, requireEventMembership, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireEventMembership, requireRole, requireReportingAccess } from '../middleware/auth.js';
 import { encryptNote, decryptNote } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
 import { broadcastEventUpdate } from '../services/liveUpdates.js';
@@ -156,7 +156,8 @@ export default async function incidentRoutes(fastify) {
   // otherwise be no way to act on a reopened incident at all.
   fastify.post(
     '/events/:eventId/incidents/:id/reopen',
-    { preHandler: [requireAuth, requireEventMembership, requireRole('dispatcher')] },
+        '/events/:eventId/incidents/:id/reopen',
+    { preHandler: [requireAuth, requireReportingAccess] },
     async (request, reply) => {
       const client = await pool.connect();
       try {
