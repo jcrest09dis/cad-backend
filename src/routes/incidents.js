@@ -156,7 +156,6 @@ export default async function incidentRoutes(fastify) {
   // otherwise be no way to act on a reopened incident at all.
   fastify.post(
     '/events/:eventId/incidents/:id/reopen',
-        '/events/:eventId/incidents/:id/reopen',
     { preHandler: [requireAuth, requireReportingAccess] },
     async (request, reply) => {
       const client = await pool.connect();
