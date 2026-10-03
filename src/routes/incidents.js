@@ -1,4 +1,4 @@
-import { pool } from '../db/pool.js';
+﻿import { pool } from '../db/pool.js';
 import { requireAuth, requireEventMembership, requireRole } from '../middleware/auth.js';
 import { encryptNote, decryptNote } from '../lib/crypto.js';
 import { audit } from '../lib/audit.js';
@@ -135,6 +135,83 @@ export default async function incidentRoutes(fastify) {
         await client.query('COMMIT');
         broadcastEventUpdate(request.params.eventId, { type: 'refresh', reason: `incident.${status.toLowerCase()}` });
         reply.send({ updated: true, status });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        reply.code(500).send({ error: err.message });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
+  // Dispatcher reopens a closed (RESOLVED/CANCELLED) incident, e.g. when
+  // additional information comes in after the fact. Always lands back on
+  // OPEN regardless of what it was before closing or whether it had live
+  // assignments at close time - those assignments were already resolved/
+  // cancelled by the close path and are left as historical record, not
+  // revived; dispatch happens fresh from OPEN. If the parent event was
+  // already closed, reopening the incident reopens the event too (same
+  // bare status flip as the admin reopen route in admin.js - units are
+  // NOT restored, matching that route's existing behavior), since there'd
+  // otherwise be no way to act on a reopened incident at all.
+  fastify.post(
+    '/events/:eventId/incidents/:id/reopen',
+    { preHandler: [requireAuth, requireEventMembership, requireRole('dispatcher')] },
+    async (request, reply) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const { rows } = await client.query(
+          `SELECT status FROM incidents WHERE id = $1 AND event_id = $2 FOR UPDATE`,
+          [request.params.id, request.params.eventId]
+        );
+        if (rows.length === 0) {
+          await client.query('ROLLBACK');
+          reply.code(404).send({ error: 'incident not found' });
+          return;
+        }
+        if (!['RESOLVED', 'CANCELLED'].includes(rows[0].status)) {
+          await client.query('ROLLBACK');
+          reply.code(400).send({ error: 'incident is not closed' });
+          return;
+        }
+
+        await client.query(
+          `UPDATE incidents SET status = 'OPEN', closed_at = NULL WHERE id = $1`,
+          [request.params.id]
+        );
+
+        const { rows: eventRows } = await client.query(
+          `SELECT status FROM events WHERE id = $1 FOR UPDATE`,
+          [request.params.eventId]
+        );
+        const eventReopened = eventRows.length > 0 && eventRows[0].status === 'closed';
+        if (eventReopened) {
+          await client.query(`UPDATE events SET status = 'active' WHERE id = $1`, [request.params.eventId]);
+        }
+
+        await audit(client, {
+          actorId: request.user.staffId,
+          action: 'incident.status.reopened',
+          entityType: 'incident',
+          entityId: request.params.id,
+        });
+        if (eventReopened) {
+          await audit(client, {
+            actorId: request.user.staffId,
+            action: 'event.reopened.via_incident_reopen',
+            entityType: 'event',
+            entityId: request.params.eventId,
+          });
+        }
+
+        await client.query('COMMIT');
+        broadcastEventUpdate(request.params.eventId, {
+          type: 'refresh',
+          reason: eventReopened ? 'incident.reopened_event_reopened' : 'incident.reopened',
+        });
+        reply.send({ reopened: true, eventReopened });
       } catch (err) {
         await client.query('ROLLBACK');
         reply.code(500).send({ error: err.message });
