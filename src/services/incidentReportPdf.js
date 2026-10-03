@@ -1,5 +1,25 @@
 ﻿import PDFDocument from "pdfkit";
 
+// The PDF is generated on the server (Render, which defaults to UTC),
+// not in the viewer's browser - toLocaleString() with no timezone
+// would format every timestamp in the server's zone instead of the
+// viewer's, which is what was producing times that looked shifted.
+// This app is for Kentucky-based events, so times are always rendered
+// in Eastern regardless of who opens the PDF, matching what dispatchers
+// see on the console (whose timestamps DO use the browser's own zone,
+// which happens to already be Eastern for this team).
+function formatDateTime(date) {
+  return new Date(date).toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
 /**
  * One PDF per event, covering every incident on it (any status) in
  * chronological order - location, type/priority, timeline, every
@@ -27,7 +47,7 @@ export function buildEventReportPdf({ event, incidents }) {
     doc
       .fontSize(11)
       .fillColor("#555")
-      .text(`${event.venue_name} \u2014 ${new Date(event.start_time).toLocaleString()}`);
+      .text(`${event.venue_name} \u2014 ${formatDateTime(event.start_time)}`);
     doc.moveDown();
 
     if (incidents.length === 0) {
@@ -55,9 +75,9 @@ export function buildEventReportPdf({ event, incidents }) {
         .fontSize(10)
         .fillColor("#555")
         .text(`Status: ${incident.status}`)
-        .text(`Created: ${new Date(incident.created_at).toLocaleString()} by ${incident.created_by_name}`);
+        .text(`Created: ${formatDateTime(incident.created_at)} by ${incident.created_by_name}`);
       if (incident.closed_at) {
-        doc.text(`Closed: ${new Date(incident.closed_at).toLocaleString()}`);
+        doc.text(`Closed: ${formatDateTime(incident.closed_at)}`);
       }
 
       doc.moveDown(0.3).fontSize(11).fillColor("#000").text("Assignments:", { underline: true });
@@ -65,9 +85,9 @@ export function buildEventReportPdf({ event, incidents }) {
         doc.fontSize(10).fillColor("#777").text("No unit was ever assigned.");
       } else {
         incident.assignments.forEach((a) => {
-          let line = `${a.unit_label} \u2014 ${a.status.toLowerCase()}, dispatched by ${a.dispatcher_name} at ${new Date(a.created_at).toLocaleString()}`;
+          let line = `${a.unit_label} \u2014 ${a.status.toLowerCase()}, dispatched by ${a.dispatcher_name} at ${formatDateTime(a.created_at)}`;
           if (a.acked_at) {
-            line += `, acked at ${new Date(a.acked_at).toLocaleString()} by ${a.acked_by_name}`;
+            line += `, acked at ${formatDateTime(a.acked_at)} by ${a.acked_by_name}`;
           }
           doc.fontSize(10).fillColor("#000").text(line);
         });
@@ -81,7 +101,7 @@ export function buildEventReportPdf({ event, incidents }) {
           doc
             .fontSize(9)
             .fillColor("#555")
-            .text(`${rev.authorName}, ${new Date(rev.createdAt).toLocaleString()}`);
+            .text(`${rev.authorName}, ${formatDateTime(rev.createdAt)}`);
           doc.fontSize(10).fillColor("#000").text(rev.content, { indent: 10 });
         });
       }
