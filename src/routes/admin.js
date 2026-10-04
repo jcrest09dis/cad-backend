@@ -1,4 +1,4 @@
-﻿import { pool } from '../db/pool.js';
+import { pool } from '../db/pool.js';
 import { requireAuth, requireGlobalAdmin } from '../middleware/auth.js';
 import { broadcastEventUpdate } from '../services/liveUpdates.js';
 import { closeEvent } from '../services/eventLifecycle.js';
@@ -588,7 +588,7 @@ export default async function adminRoutes(fastify) {
   // assigns one.
   fastify.post('/admin/units/:unitId/type', async (request, reply) => {
     const { unitType } = request.body;
-    const validTypes = ['EC', 'Cart', 'Law', 'Fire'];
+    const validTypes = ['EC', 'Cart', 'Rupp Cart', 'Law', 'Fire'];
     if (unitType !== null && unitType !== undefined && !validTypes.includes(unitType)) {
       reply.code(400).send({ error: `unitType must be one of ${validTypes.join(', ')}, or null` });
       return;
