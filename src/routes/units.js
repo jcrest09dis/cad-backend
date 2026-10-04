@@ -1,4 +1,4 @@
-import { pool } from '../db/pool.js';
+﻿import { pool } from '../db/pool.js';
 import { requireAuth, requireEventMembership, requireRole } from '../middleware/auth.js';
 import { broadcastEventUpdate } from '../services/liveUpdates.js';
 
@@ -41,7 +41,7 @@ export default async function unitRoutes(fastify) {
       }
 
       // A unit can only be moved past AVAILABLE if it has a live (ACKED)
-      // assignment — except OUT_OF_SERVICE, which is a standalone override.
+      // assignment - except OUT_OF_SERVICE, which is a standalone override.
       if (status !== 'OUT_OF_SERVICE' && status !== 'AVAILABLE') {
         const { rows } = await pool.query(
           `SELECT a.status AS assignment_status
@@ -87,7 +87,7 @@ export default async function unitRoutes(fastify) {
     { preHandler: [requireAuth, requireEventMembership] },
     async (request, reply) => {
       const { rows } = await pool.query(
-        `SELECT id, label, status, current_assignment_id FROM units WHERE event_id = $1 ORDER BY label`,
+        `SELECT id, label, status, unit_type, current_assignment_id FROM units WHERE event_id = $1 ORDER BY label`,
         [request.params.eventId]
       );
       reply.send(rows);

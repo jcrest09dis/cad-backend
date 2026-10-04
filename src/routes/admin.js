@@ -1,4 +1,4 @@
-import { pool } from '../db/pool.js';
+﻿import { pool } from '../db/pool.js';
 import { requireAuth, requireGlobalAdmin } from '../middleware/auth.js';
 import { broadcastEventUpdate } from '../services/liveUpdates.js';
 import { closeEvent } from '../services/eventLifecycle.js';
@@ -521,10 +521,10 @@ export default async function adminRoutes(fastify) {
   // staff being pooled and checked into events rather than recreated
   // per event) ----
   fastify.post('/admin/events/:eventId/units', async (request, reply) => {
-    const { label } = request.body;
+    const { label, unitType } = request.body;
     const { rows } = await pool.query(
-      `INSERT INTO units (event_id, label, status) VALUES ($1, $2, 'AVAILABLE') RETURNING id`,
-      [request.params.eventId, label]
+      `INSERT INTO units (event_id, label, status, unit_type) VALUES ($1, $2, 'AVAILABLE', $3) RETURNING id`,
+      [request.params.eventId, label, unitType ?? null]
     );
     reply.code(201).send({ unitId: rows[0].id });
   });
@@ -532,21 +532,21 @@ export default async function adminRoutes(fastify) {
   // Create a unit with no event yet - stays in the pool until assigned
   // (see /admin/units/:unitId/assign-event below).
   fastify.post('/admin/units', async (request, reply) => {
-    const { label } = request.body;
+    const { label, unitType } = request.body;
     if (!label || !label.trim()) {
       reply.code(400).send({ error: 'label is required' });
       return;
     }
     const { rows } = await pool.query(
-      `INSERT INTO units (event_id, label, status) VALUES (NULL, $1, 'AVAILABLE') RETURNING id`,
-      [label.trim()]
+      `INSERT INTO units (event_id, label, status, unit_type) VALUES (NULL, $1, 'AVAILABLE', $2) RETURNING id`,
+      [label.trim(), unitType ?? null]
     );
     reply.code(201).send({ unitId: rows[0].id });
   });
 
   fastify.get('/admin/events/:eventId/units', async (request, reply) => {
     const { rows } = await pool.query(
-      `SELECT id, label, status FROM units WHERE event_id = $1 ORDER BY label`,
+      `SELECT id, label, status, unit_type FROM units WHERE event_id = $1 ORDER BY label`,
       [request.params.eventId]
     );
     reply.send(rows);
@@ -557,7 +557,7 @@ export default async function adminRoutes(fastify) {
   // null now; event_name/event_status come back null for pooled units.
   fastify.get('/admin/units', async (request, reply) => {
     const { rows } = await pool.query(
-      `SELECT u.id, u.label, u.status, u.event_id, e.name AS event_name, e.status AS event_status
+      `SELECT u.id, u.label, u.status, u.unit_type, u.event_id, e.name AS event_name, e.status AS event_status
        FROM units u
        LEFT JOIN events e ON e.id = u.event_id
        ORDER BY e.start_time DESC NULLS FIRST, u.label`
@@ -574,6 +574,28 @@ export default async function adminRoutes(fastify) {
     const { rows } = await pool.query(
       `UPDATE units SET event_id = $1 WHERE id = $2 RETURNING id`,
       [eventId ?? null, request.params.unitId]
+    );
+    if (rows.length === 0) {
+      reply.code(404).send({ error: 'unit not found' });
+      return;
+    }
+    reply.send({ updated: true });
+  });
+
+  // Set/change a unit's type (EC, Cart, Law, Fire) - drives grouping on
+  // the live dashboard board and the admin Units list. Nullable - a unit
+  // with no type set falls into the "unspecified" group until an admin
+  // assigns one.
+  fastify.post('/admin/units/:unitId/type', async (request, reply) => {
+    const { unitType } = request.body;
+    const validTypes = ['EC', 'Cart', 'Law', 'Fire'];
+    if (unitType !== null && unitType !== undefined && !validTypes.includes(unitType)) {
+      reply.code(400).send({ error: `unitType must be one of ${validTypes.join(', ')}, or null` });
+      return;
+    }
+    const { rows } = await pool.query(
+      `UPDATE units SET unit_type = $1 WHERE id = $2 RETURNING id`,
+      [unitType ?? null, request.params.unitId]
     );
     if (rows.length === 0) {
       reply.code(404).send({ error: 'unit not found' });
